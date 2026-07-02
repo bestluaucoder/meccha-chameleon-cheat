@@ -6,8 +6,8 @@ import pymem
 from PyQt5.QtWidgets import (QApplication, QWidget, QCheckBox, QLabel,
     QVBoxLayout, QHBoxLayout, QPushButton, QFrame, QColorDialog,
     QSpinBox, QTabWidget)
-from PyQt5.QtCore import Qt, QTimer, QPointF, QPolygonF
-from PyQt5.QtGui import QPainter, QPen, QColor, QFont, QBrush
+from PyQt5.QtCore import Qt, QTimer, QPointF
+from PyQt5.QtGui import QPolygonF, QPainter, QPen, QColor, QFont, QBrush
 
 STEAM_APP_ID = "4704690"
 
@@ -676,18 +676,19 @@ class Overlay(QWidget):
                 hh = self.cfg.box_height * scale * 0.8
             p.setPen(Qt.NoPen)
             p.setBrush(QColor(30, 30, 30, 180))
-            p.drawRect(int(hx), int(hy), int(hw), int(hh))
+            ih = int(hh)
+            p.drawRect(int(hx), int(hy), int(hw), ih)
             h_pct = max(0, min(1.0, hp / 100.0))
-            h_fill = int(hh * h_pct)
+            h_fill = min(int(ih * h_pct), ih)
             hr = int(255 * (1 - h_pct))
             hg = int(255 * h_pct)
             p.setBrush(QColor(hr, hg, 0, 220))
-            p.drawRect(int(hx), int(hy + hh - h_fill), int(hw), h_fill)
+            p.drawRect(int(hx), int(hy) + ih - h_fill, int(hw), h_fill)
             if self.cfg.shield_bar and shp is not None and shp > 0:
                 s_pct = max(0, min(1.0, shp / 100.0))
-                s_fill = int(hh * s_pct)
+                s_fill = min(int(ih * s_pct), ih)
                 p.setBrush(QColor(0, 120, 255, 200))
-                p.drawRect(int(hx + hw + 2), int(hy + hh - s_fill), int(hw), s_fill)
+                p.drawRect(int(hx + hw + 2), int(hy) + ih - s_fill, int(hw), s_fill)
 
         if self.cfg.skeleton_esp and bones and len(bones) > 20:
             skel_color = self.cfg.skeleton_color
@@ -775,7 +776,7 @@ class MenuWindow(QWidget):
         lo.setContentsMargins(8, 8, 8, 8)
         lo.setSpacing(4)
 
-        t = QLabel("MECCHA ESP v1.2")
+        t = QLabel("MECCHA ESP v1.3")
         t.setStyleSheet("font-size: 14px; font-weight: bold; color: #5af;")
         lo.addWidget(t)
 
@@ -845,7 +846,7 @@ class MenuWindow(QWidget):
         lbl = QLabel("MECCA CHAMELEON ESP")
         lbl.setStyleSheet("font-size: 13px; font-weight: bold; color: #5af;")
         lo.addWidget(lbl)
-        lo.addWidget(QLabel("v1.2"))
+        lo.addWidget(QLabel("v1.3"))
         lo.addWidget(QLabel("\u2500" * 30))
         lo.addWidget(QLabel("Controls:"))
         lo.addWidget(QLabel("  Ins/F1  - Toggle Menu"))
