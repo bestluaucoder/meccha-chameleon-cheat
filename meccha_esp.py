@@ -6,7 +6,7 @@ import pymem
 from PyQt5.QtWidgets import (QApplication, QWidget, QCheckBox, QLabel,
     QVBoxLayout, QHBoxLayout, QPushButton, QFrame, QColorDialog,
     QSpinBox, QTabWidget)
-from PyQt5.QtCore import Qt, QTimer
+from PyQt5.QtCore import Qt, QTimer, QPointF, QPolygonF
 from PyQt5.QtGui import QPainter, QPen, QColor, QFont, QBrush
 
 STEAM_APP_ID = "4704690"
@@ -78,6 +78,37 @@ def set_anti_capture(hwnd):
 
 def dist(a, b):
     return math.sqrt((a[0]-b[0])**2 + (a[1]-b[1])**2 + (a[2]-b[2])**2)
+
+def qrotate(q, v):
+    x, y, z, w = q
+    cx = y * v[2] - z * v[1]
+    cy = z * v[0] - x * v[2]
+    cz = x * v[1] - y * v[0]
+    dxx = y * cz - z * cy
+    dyy = z * cx - x * cz
+    dzz = x * cy - y * cx
+    return (v[0] + 2 * (w * cx + dxx),
+            v[1] + 2 * (w * cy + dyy),
+            v[2] + 2 * (w * cz + dzz))
+
+def cross_oab(o, a, b):
+    return (a[0]-o[0])*(b[1]-o[1]) - (a[1]-o[1])*(b[0]-o[0])
+
+def convex_hull(pts):
+    if len(pts) <= 1:
+        return pts
+    pts = sorted(set(pts))
+    lower = []
+    for p in pts:
+        while len(lower) >= 2 and cross_oab(lower[-2], lower[-1], p) <= 0:
+            lower.pop()
+        lower.append(p)
+    upper = []
+    for p in reversed(pts):
+        while len(upper) >= 2 and cross_oab(upper[-2], upper[-1], p) <= 0:
+            upper.pop()
+        upper.append(p)
+    return lower[:-1] + upper[:-1]
 
 def launch_steam_and_game():
     """Launch Steam if not running, then launch the game."""
@@ -237,6 +268,7 @@ class Config:
     enabled: bool = True
     box_esp: bool = True
     corner_esp: bool = False
+    outline_esp: bool = False
     skeleton_esp: bool = True
     show_names: bool = True
     show_distance: bool = True
@@ -382,16 +414,16 @@ class GameReader:
         if not ctw: return None
         cst, count = read_tarray(self.pm, mesh + self.cst_off)
         if not cst or count < 5 or count > 200: return None
+        ctw_r, ctw_t, ctw_s = ctw["rot"], ctw["trans"], ctw["scale"]
         bones = []
         for i in range(count):
             addr = cst + i * BONE_TRANSFORM_STRIDE
             try:
                 pos = rvec3(self.pm, addr + 0x20)
-            except: pos = (0,0,0)
-            rx = ctw["trans"][0] + pos[0]
-            ry = ctw["trans"][1] + pos[1]
-            rz = ctw["trans"][2] + pos[2]
-            bones.append((rx, ry, rz))
+            except: pos = (0, 0, 0)
+            sx, sy, sz = pos[0]*ctw_s[0], pos[1]*ctw_s[1], pos[2]*ctw_s[2]
+            rx, ry, rz = qrotate(ctw_r, (sx, sy, sz))
+            bones.append((rx + ctw_t[0], ry + ctw_t[1], rz + ctw_t[2]))
         return bones
 
     def get_health(self, actor):
@@ -557,21 +589,27 @@ class Overlay(QWidget):
             p.setPen(QPen(QColor(255,100,100)))
             p.drawText(10, 20, "No Camera (in game?)"); return
         players = list(self.reader.iter_players())
+        health_cache = {}
+        for pl in players:
+            actor = pl["actor"]
+            if actor not in health_cache:
+                health_cache[actor] = self.reader.get_health(actor)
         alive = 0
         for pl in players:
-            if pl['is_local']:
-                self._draw_player(p, pl, cam, sw, sh)
+            hp, shp = health_cache.get(pl["actor"], (None, None))
+            if pl["is_local"]:
+                if self.cfg.show_local:
+                    self._draw_player(p, pl, cam, sw, sh, hp, shp)
             else:
-                hp, _ = self.reader.get_health(pl['actor'])
-                if hp is None or hp > 0:
-                    alive += 1
-                    self._draw_player(p, pl, cam, sw, sh)
+                if hp is not None and hp <= 0: continue
+                alive += 1
+                self._draw_player(p, pl, cam, sw, sh, hp, shp)
         if self.cfg.show_playerlist:
             y = 40
             p.setPen(QPen(QColor(200, 200, 200, 180)))
             for pl in players:
-                if pl['is_local']: continue
-                hp, _ = self.reader.get_health(pl['actor'])
+                if pl["is_local"]: continue
+                hp, _ = health_cache.get(pl["actor"], (None, None))
                 if hp is not None and hp <= 0: continue
                 hpc = f"HP:{int(hp)}" if hp is not None else ""
                 txt = f"{pl['name']} [{int(dist(pl['pos'], cam['loc'])/100)}m] {hpc}"
@@ -581,10 +619,9 @@ class Overlay(QWidget):
         p.setPen(QPen(QColor(200,200,200)))
         p.drawText(10, 20, f"Players: {alive}")
 
-    def _draw_player(self, p, pl, cam, sw, sh):
+    def _draw_player(self, p, pl, cam, sw, sh, hp=None, shp=None):
         is_local = pl["is_local"]
         pos = pl["pos"]
-        actor = pl["actor"]
         bones = pl.get("bones")
         color = self.cfg.local_color if is_local else self.cfg.enemy_color
         d = dist(pos, cam["loc"])
@@ -592,40 +629,66 @@ class Overlay(QWidget):
         base = w2s(pos, cam, sw, sh)
         if not base: return
         sx, sy = base[0], base[1] + self.cfg.y_offset
-        if self.cfg.box_esp and not is_local:
-            hw = self.cfg.box_width * scale / 2.0
-            head = w2s((pos[0], pos[1], pos[2] + self.cfg.box_height * scale), cam, sw, sh)
-            if head:
-                bx = head[0] - hw; by = head[1]
-                bw = 2*hw; bh = sy - by
-                if bw > 0 and bh > 0:
-                    if self.cfg.corner_esp:
-                        self._draw_corners(p, bx, by, bw, bh, color)
-                    else:
-                        p.setPen(QPen(QColor(*color), 1.5))
-                        p.setBrush(Qt.NoBrush)
-                        p.drawRect(int(bx), int(by), int(bw), int(bh))
-        if (self.cfg.health_bar or self.cfg.shield_bar) and not is_local:
-            hp, shp = self.reader.get_health(actor)
-            if hp is not None:
-                head = w2s((pos[0], pos[1], pos[2] + self.cfg.box_height * scale), cam, sw, sh)
-                if head:
-                    bx = head[0] - self.cfg.box_width * scale / 2.0 - 6
-                    by = head[1]; bw = 4
-                    bh = (sy - by) * 0.8
-                    p.setPen(Qt.NoPen)
-                    p.setBrush(QColor(30, 30, 30, 180))
-                    p.drawRect(int(bx), int(by), int(bw), int(bh))
-                    h_pct = max(0, min(1.0, hp / 100.0))
-                    h_fill = int(bh * h_pct)
-                    hr = int(255 * (1 - h_pct)); hg = int(255 * h_pct)
-                    p.setBrush(QColor(hr, hg, 0, 220))
-                    p.drawRect(int(bx), int(by + bh - h_fill), int(bw), h_fill)
-                    if self.cfg.shield_bar and shp is not None and shp > 0:
-                        s_pct = max(0, min(1.0, shp / 100.0))
-                        s_fill = int(bh * s_pct)
-                        p.setBrush(QColor(0, 120, 255, 200))
-                        p.drawRect(int(bx + bw + 2), int(by + bh - s_fill), int(bw), s_fill)
+
+        bone_pts = []
+        if bones and len(bones) > 5:
+            for bp in bones:
+                s = w2s(bp, cam, sw, sh)
+                if s: bone_pts.append(s)
+
+        box = None
+        if bone_pts:
+            xs = [pt[0] for pt in bone_pts]
+            ys = [pt[1] for pt in bone_pts]
+            bx, by = min(xs), min(ys)
+            bw, bh = max(xs) - bx, max(ys) - by
+            if bw > 0 and bh > 0:
+                box = (bx, by, bw, bh)
+
+        if self.cfg.outline_esp and not is_local and len(bone_pts) >= 3:
+            hull = convex_hull(bone_pts)
+            if len(hull) >= 3:
+                poly = QPolygonF([QPointF(x, y) for x, y in hull])
+                p.setBrush(QColor(*color, 40))
+                p.setPen(QPen(QColor(*color), 1.5))
+                p.drawPolygon(poly)
+
+        if self.cfg.box_esp and not is_local and box:
+            bx, by, bw, bh = box
+            if self.cfg.corner_esp:
+                self._draw_corners(p, bx, by, bw, bh, color)
+            else:
+                p.setPen(QPen(QColor(*color), 1.5))
+                p.setBrush(Qt.NoBrush)
+                p.drawRect(int(bx), int(by), int(bw), int(bh))
+
+        if (self.cfg.health_bar or self.cfg.shield_bar) and not is_local and hp is not None:
+            if box:
+                bx, by, bw, bh = box
+                hx = bx - 6
+                hy = by
+                hw = 4
+                hh = bh * 0.8
+            else:
+                hx = sx - self.cfg.box_width * scale / 2.0 - 6
+                hy = sy - self.cfg.box_height * scale
+                hw = 4
+                hh = self.cfg.box_height * scale * 0.8
+            p.setPen(Qt.NoPen)
+            p.setBrush(QColor(30, 30, 30, 180))
+            p.drawRect(int(hx), int(hy), int(hw), int(hh))
+            h_pct = max(0, min(1.0, hp / 100.0))
+            h_fill = int(hh * h_pct)
+            hr = int(255 * (1 - h_pct))
+            hg = int(255 * h_pct)
+            p.setBrush(QColor(hr, hg, 0, 220))
+            p.drawRect(int(hx), int(hy + hh - h_fill), int(hw), h_fill)
+            if self.cfg.shield_bar and shp is not None and shp > 0:
+                s_pct = max(0, min(1.0, shp / 100.0))
+                s_fill = int(hh * s_pct)
+                p.setBrush(QColor(0, 120, 255, 200))
+                p.drawRect(int(hx + hw + 2), int(hy + hh - s_fill), int(hw), s_fill)
+
         if self.cfg.skeleton_esp and bones and len(bones) > 20:
             skel_color = self.cfg.skeleton_color
             pts = {}
@@ -636,6 +699,7 @@ class Overlay(QWidget):
                 if a in pts and b in pts:
                     p.setPen(QPen(QColor(*skel_color), 1.5))
                     p.drawLine(int(pts[a][0]), int(pts[a][1]), int(pts[b][0]), int(pts[b][1]))
+
         if self.cfg.show_names or self.cfg.show_distance:
             parts = []
             if self.cfg.show_names:
@@ -646,9 +710,11 @@ class Overlay(QWidget):
                 txt = " | ".join(parts)
                 p.setPen(QPen(QColor(*color)))
                 p.drawText(int(sx + 8), int(sy), txt)
+
         if self.cfg.snap_lines and not is_local:
             p.setPen(QPen(QColor(*color), 1, Qt.DashLine))
             p.drawLine(int(sw/2), int(sh), int(sx), int(sy))
+
         r = int(self.cfg.dot_radius * scale)
         p.setPen(Qt.NoPen)
         p.setBrush(QColor(*color))
@@ -718,6 +784,7 @@ class MenuWindow(QWidget):
         lo.addWidget(QLabel("Visuals"))
         self._chk("Box ESP", "box_esp", lo)
         self._chk("Corner Box", "corner_esp", lo)
+        self._chk("Outline ESP", "outline_esp", lo)
         self._chk("Skeleton ESP", "skeleton_esp", lo)
         self._chk("Nametags", "show_names", lo)
         self._chk("Distance", "show_distance", lo)
@@ -786,6 +853,7 @@ class MenuWindow(QWidget):
         lo.addWidget(QLabel("\u2500" * 30))
         lo.addWidget(QLabel("Features:"))
         lo.addWidget(QLabel("  Box / Corner ESP"))
+        lo.addWidget(QLabel("  Outline ESP"))
         lo.addWidget(QLabel("  Skeleton ESP"))
         lo.addWidget(QLabel("  Health & Shield bars"))
         lo.addWidget(QLabel("  Player nametags"))
