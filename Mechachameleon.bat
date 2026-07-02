@@ -1,0 +1,6 @@
+@echo off
+echo Installing dependencies...
+python -m pip install --user pymem PyQt5
+echo Done. Starting...
+python "%~dp0meccha_esp.py"
+pause
