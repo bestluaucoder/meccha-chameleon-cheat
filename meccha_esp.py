@@ -414,16 +414,14 @@ class GameReader:
         if not ctw: return None
         cst, count = read_tarray(self.pm, mesh + self.cst_off)
         if not cst or count < 5 or count > 200: return None
-        ctw_r, ctw_t, ctw_s = ctw["rot"], ctw["trans"], ctw["scale"]
+        trans = ctw["trans"]
         bones = []
         for i in range(count):
             addr = cst + i * BONE_TRANSFORM_STRIDE
             try:
                 pos = rvec3(self.pm, addr + 0x20)
             except: pos = (0, 0, 0)
-            sx, sy, sz = pos[0]*ctw_s[0], pos[1]*ctw_s[1], pos[2]*ctw_s[2]
-            rx, ry, rz = qrotate(ctw_r, (sx, sy, sz))
-            bones.append((rx + ctw_t[0], ry + ctw_t[1], rz + ctw_t[2]))
+            bones.append((pos[0] + trans[0], pos[1] + trans[1], pos[2] + trans[2]))
         return bones
 
     def get_health(self, actor):
